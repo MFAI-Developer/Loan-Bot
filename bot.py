@@ -2,7 +2,7 @@ import os
 import re
 import pickle
 import glob
-import fitz
+import fitz  # PyMuPDF for handling PDFs
 import faiss
 import pandas as pd
 import streamlit as st
@@ -10,14 +10,15 @@ from PyPDF2 import PdfReader
 from pdf2image import convert_from_path
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.vectorstores.faiss import FAISS
-from langchain.document_loaders import PyPDFLoader
+from langchain.schema import Document  # Corrected import for Document class
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.chains.question_answering import load_qa_chain
 from langchain.chains import RetrievalQA
 from langchain.chat_models import ChatOpenAI
 
+
 # Ensure your OpenAI API key is securely stored in an environment variable
-openai_api_key = os.getenv("sk-gYEIHqFbEpSLa5or43o45Z2qLbw2TcZV4WX7mMYHHtT3BlbkFJXLufBr-uDOo8I2NdRj6zr5xVKT09_rUGlAgWEoE7cA")
+openai_api_key = os.getenv("OpenAI API key")
 
 # Set the path to your data and PDF files
 pdf_directory_path = '/home/mfai-developer/PycharmProjects/chatbot/data/pdf'
@@ -55,13 +56,27 @@ def load_excel_file(xlsx_path):
         return None
 
 
-# Function to process PDF text and split into chunks with reference
-def process_pdf(pdf_path):
-    loader = PyPDFLoader(pdf_path)
+# Custom function to process PDF and include page numbers
+def process_pdf_with_page_numbers(pdf_path):
+    reader = fitz.open(pdf_path)  # Use PyMuPDF to open the PDF
+    documents = []
     text_splitter = CharacterTextSplitter(chunk_size=1024, chunk_overlap=100)
-    documents = loader.load_and_split(text_splitter)
-    for doc in documents:
-        doc.metadata["pdf_file"] = pdf_path  # Store PDF file path in metadata
+
+    for page_number in range(len(reader)):
+        page = reader.load_page(page_number)
+        text = page.get_text("text")
+        chunks = text_splitter.split_text(text)
+
+        for chunk in chunks:
+            doc = Document(
+                page_content=chunk,
+                metadata={
+                    "pdf_file": pdf_path,
+                    "page_number": page_number + 1
+                }
+            )
+            documents.append(doc)
+
     return documents
 
 
@@ -75,7 +90,7 @@ def build_faiss_index(documents):
 # Function to query FAISS index using GPT-4
 def query_faiss(query, vectorstore):
     retriever = vectorstore.as_retriever()
-    llm = ChatOpenAI(model="gpt-4", temperature=0.6, openai_api_key=openai_api_key)
+    llm = ChatOpenAI(model="gpt-4", temperature=0.0, openai_api_key=openai_api_key)
 
     qa_chain = load_qa_chain(llm, chain_type="stuff")
     result = qa_chain({"input_documents": retriever.get_relevant_documents(query), "question": query})
@@ -85,14 +100,13 @@ def query_faiss(query, vectorstore):
 # Function to extract the page number and display the relevant page from the PDF
 def extract_and_display_pdf_page(documents, pdf_file):
     for doc in documents:
-        if "pdf_file" in doc.metadata and doc.metadata["pdf_file"] == pdf_file:
-            # Extracting the page number from the metadata (if available)
+        if doc.metadata["pdf_file"] == pdf_file:
             page_number = doc.metadata.get("page_number", None)
             if page_number:
                 display_pdf_page(pdf_file, page_number)
-                break
-        else:
-            st.warning("No specific page number found in the metadata.")
+                return  # Exit after displaying the relevant page
+
+    st.warning("No specific page number found in the metadata.")
 
 
 # Function to display the relevant PDF page
@@ -138,7 +152,7 @@ if 'vectorstore' not in st.session_state:
     with st.spinner("Building FAISS index..."):
         documents = []
         for pdf in st.session_state.pdf_files:
-            documents.extend(process_pdf(pdf))
+            documents.extend(process_pdf_with_page_numbers(pdf))
         st.session_state.vectorstore = build_faiss_index(documents)
 
 if 'conversations' not in st.session_state:
